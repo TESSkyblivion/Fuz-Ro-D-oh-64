@@ -8,7 +8,10 @@
 #undef VERSION_REVISION
 #undef VERSION_BUILD
 
-#include "BuildInfo.h"
+//#include "BuildInfo.h"
+//Skyblivion fixed revision
+#define VERSION_REVISION 12416
+#define VERSION_BUILD 1
 
 #define STRINGIZE2(s) #s
 #define STRINGIZE(s) STRINGIZE2(s)
