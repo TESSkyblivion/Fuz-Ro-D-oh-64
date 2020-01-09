@@ -2,6 +2,10 @@
 #include "xbyak/xbyak.h"
 #include "skse64_common/BranchTrampoline.h"
 #include "skse64_common/Relocation.h"
+#include "skse64/GameStreams.h"
+
+__declspec(dllexport) double g_silent_voice_duration_seconds = 0.0;
+__declspec(dllexport) int g_is_obscript_say_say_to = false;
 
 namespace hookedAddresses
 {
@@ -33,6 +37,35 @@ namespace hookedAddresses
 	uintptr_t				kASCM_QueueNPCChatterData_Exit = kASCM_QueueNPCChatterData + 0xD4;
 }
 
+#pragma push
+#pragma pack (2)
+struct XwmaHeader {
+	char RIFF[4];         // "RIFF"
+	unsigned long chunkSize;
+	char XWMA[4];         // "XWMA"
+	char subchunk1Id[4];  // "fmt "
+	unsigned long subchunk1Size;   // size of fmt chunk
+	unsigned short format;
+	unsigned short numChannels;    // Needed for length calc.
+	unsigned long samplesPerSec;   // Needed for length calc.
+	unsigned long bytesPerSec;
+	unsigned short blockAlign;
+	unsigned short bitsPerSample;  // Needed for length calc.
+	unsigned short extSize;
+	char subchunk2Id[4];  // "dpds"
+	// HIDDEN COMPILER PACKING OF 2 BYTES WILL HAPPEN HERE
+	//unsigned long subchunk2Size;   // Needed for length calc. Length of dpds chunk.
+//	unsigned long* subchunk2Data;  // Needed for length calc. Dpds data
+};
+STATIC_ASSERT(sizeof(XwmaHeader) == 42);
+#pragma pop
+
+struct FUZE {
+	char name[4]; //FUZE
+	UInt32 pad;
+	UInt32 lipLen;
+};
+
 
 void SneakAtackVoicePath(CachedResponseData* Data, char* VoicePathBuffer)
 {
@@ -57,54 +90,87 @@ void SneakAtackVoicePath(CachedResponseData* Data, char* VoicePathBuffer)
 	BSIStream* FUZStream = BSIStream::CreateInstance(FUZPath.c_str());
 	BSIStream* XWMStream = BSIStream::CreateInstance(XWMPath.c_str());
 
-#if 0
-	_MESSAGE("Expected: %s", VoicePathBuffer);
-	gLog.Indent();
-	_MESSAGE("WAV Stream [%s] Validity = %d", WAVPath.c_str(), WAVStream->valid);
-	_MESSAGE("FUZ Stream [%s] Validity = %d", FUZPath.c_str(), FUZStream->valid);
-	_MESSAGE("XWM Stream [%s] Validity = %d", XWMPath.c_str(), XWMStream->valid);
-	gLog.Outdent();
-#endif
-
-#ifndef NDEBUG
-	if (!(WAVStream->valid == 0 && FUZStream->valid == 0 && XWMStream->valid == 0))
-#else
-	if (WAVStream->valid == 0 && FUZStream->valid == 0 && XWMStream->valid == 0)
-#endif
+	if (g_is_obscript_say_say_to == true)
 	{
-		static const int kWordsPerSecond = kWordsPerSecondSilence.GetData().i;
-		static const int kMaxSeconds = 10;
-
-		int SecondsOfSilence = 2;
-		char ShimAssetFilePath[0x104] = { 0 };
-		std::string ResponseText(Data->responseText.Get());
-
-		if (ResponseText.length() > 4 && strncmp(ResponseText.c_str(), "<ID=", 4))
-		{
-			SME::StringHelpers::Tokenizer TextParser(ResponseText.c_str(), " ");
-			int WordCount = 0;
-
-			while (TextParser.NextToken(ResponseText) != -1)
-				WordCount++;
-
-			SecondsOfSilence = WordCount / ((kWordsPerSecond > 0) ? kWordsPerSecond : 2) + 1;
-
-			if (SecondsOfSilence <= 0)
-				SecondsOfSilence = 2;
-			else if (SecondsOfSilence > kMaxSeconds)
-				SecondsOfSilence = kMaxSeconds;
-
-			// calculate the response text's hash and stash it for later lookups
-			SubtitleHasher::Instance.Add(Data->responseText.Get());
-		}
-
-		if (ResponseText.length() > 1 || (ResponseText.length() == 1 && ResponseText[0] == ' ' && kSkipEmptyResponses.GetData().i == 0))
-		{
-			FORMAT_STR(ShimAssetFilePath, "Data\\Sound\\Voice\\Fuz Ro Doh\\Stock_%d.xwm", SecondsOfSilence);
-			CALL_MEMBER_FN(&Data->voiceFilePath, Set)(ShimAssetFilePath);
 #ifndef NDEBUG
-			_MESSAGE("Missing Asset - Switching to '%s'", ShimAssetFilePath);
+		_MESSAGE("Loading Asset '%s'", FUZPath.c_str());
 #endif
+		BSResourceNiBinaryStream fileStream(FUZPath.c_str());
+		if (fileStream.IsValid()) {
+			_MESSAGE("Reading Asset from %s...", FUZPath.c_str());
+			// Check if file is empty, if not check if the BOM is UTF-16
+			if (FUZStream->valid) {
+				FUZE fuz_header;
+				UInt32	ret = fileStream.Read(&fuz_header, sizeof(FUZE));
+#ifndef NDEBUG
+				_MESSAGE("Reading Asset from %s...", fuz_header.name);
+#endif
+				fileStream.Seek(fuz_header.lipLen);
+				XwmaHeader xwma_header;
+				ret = fileStream.Read(&xwma_header, sizeof(XwmaHeader));
+
+				UInt32 subchunk2Size;
+				ret = fileStream.Read(&subchunk2Size, sizeof(subchunk2Size));
+				UInt32 dpds_table_size = subchunk2Size / 4;
+				fileStream.Seek((dpds_table_size - 2) * 4);
+				UInt32 totalBytes;
+				fileStream.Read(&totalBytes, sizeof(uint32_t));
+				float numSamples = float(totalBytes) / float(xwma_header.numChannels * (xwma_header.bitsPerSample / 8));
+				g_silent_voice_duration_seconds = numSamples / xwma_header.samplesPerSec;
+			}
+
+		}
+	} else {
+
+#if 0
+		_MESSAGE("Expected: %s", VoicePathBuffer);
+		gLog.Indent();
+		_MESSAGE("WAV Stream [%s] Validity = %d", WAVPath.c_str(), WAVStream->valid);
+		_MESSAGE("FUZ Stream [%s] Validity = %d", FUZPath.c_str(), FUZStream->valid);
+		_MESSAGE("XWM Stream [%s] Validity = %d", XWMPath.c_str(), XWMStream->valid);
+		gLog.Outdent();
+#endif
+
+#ifndef NDEBUG
+		if (!(WAVStream->valid == 0 && FUZStream->valid == 0 && XWMStream->valid == 0))
+#else
+		if (WAVStream->valid == 0 && FUZStream->valid == 0 && XWMStream->valid == 0)
+#endif
+		{
+			static const int kWordsPerSecond = kWordsPerSecondSilence.GetData().i;
+			static const int kMaxSeconds = 10;
+
+			int SecondsOfSilence = 2;
+			char ShimAssetFilePath[0x104] = { 0 };
+			std::string ResponseText(Data->responseText.Get());
+
+			if (ResponseText.length() > 4 && strncmp(ResponseText.c_str(), "<ID=", 4))
+			{
+				SME::StringHelpers::Tokenizer TextParser(ResponseText.c_str(), " ");
+				int WordCount = 0;
+
+				while (TextParser.NextToken(ResponseText) != -1)
+					WordCount++;
+
+				SecondsOfSilence = WordCount / ((kWordsPerSecond > 0) ? kWordsPerSecond : 2) + 1;
+
+				if (SecondsOfSilence <= 0)
+					SecondsOfSilence = 2;
+				else if (SecondsOfSilence > kMaxSeconds)
+					SecondsOfSilence = kMaxSeconds;
+
+				// calculate the response text's hash and stash it for later lookups
+				SubtitleHasher::Instance.Add(Data->responseText.Get());
+			}
+
+			if (ResponseText.length() > 1 || (ResponseText.length() == 1 && ResponseText[0] == ' ' && kSkipEmptyResponses.GetData().i == 0))
+			{
+				FORMAT_STR(ShimAssetFilePath, "Data\\Sound\\Voice\\Fuz Ro Doh\\Stock_%d.xwm", SecondsOfSilence);
+				CALL_MEMBER_FN(&Data->voiceFilePath, Set)(ShimAssetFilePath);
+#ifndef NDEBUG
+				_MESSAGE("Missing Asset - Switching to '%s'", ShimAssetFilePath);
+#endif
+			}
 		}
 	}
 
