@@ -22,7 +22,9 @@
 #include <chrono>
 #include <unordered_set>
 
-extern IDebugLog						gLog;
+#ifndef SKYBLIVION_EXPORTS
+	extern IDebugLog						gLog;
+#endif
 
 namespace interfaces
 {
